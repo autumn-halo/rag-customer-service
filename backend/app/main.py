@@ -95,3 +95,14 @@ if _STATIC_DIR.exists():
         if file.is_file():
             return FileResponse(file)
         return FileResponse(_STATIC_DIR / "index.html")
+else:
+
+    @app.get("/")
+    def dev_root():
+        """开发模式：前端由 vite dev server 提供，此处只给友好提示。"""
+        return {
+            "name": "RAG 电商知识库问答系统（开发模式）",
+            "tip": "前端页面请访问 http://localhost:5173（先运行 start.bat）",
+            "docs": "/docs",
+            "health": "/api/health",
+        }
