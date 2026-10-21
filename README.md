@@ -17,13 +17,14 @@
 
 ## 快速启动
 
-### 方式一：双击脚本（推荐，Windows）
+### 方式一：一键启动（推荐，Windows）
 
-1. 双击 `start-backend.bat` 启动后端（黑窗口别关，接口文档 http://localhost:8000/docs）
-2. 双击 `start-frontend.bat` 启动前端
-3. 浏览器打开 http://localhost:5173
+1. 双击项目根目录的 `start.bat`
+2. 会自动弹出两个窗口（后端 + 前端），**都别关**
+3. 浏览器会自动打开 http://localhost:5173
 
 > 管理员账号：`admin / 123456`
+> 注意：bat 脚本内为纯英文（Windows 老式编码下中文会乱码导致解析错乱）
 
 ### 方式二：手动命令
 
