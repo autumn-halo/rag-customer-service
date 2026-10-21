@@ -1,6 +1,5 @@
 """文档管理：列表查询、删除（清库/向量/磁盘三处）、重新解析。"""
 import logging
-from pathlib import Path
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -9,6 +8,7 @@ from app.models.chunk import Chunk
 from app.models.document import Document
 from app.rag import bm25, vectorstore
 from app.services import queue
+from app.utils.file import resolve_stored_path
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def delete_document_full(db: Session, doc: Document) -> None:
     db.commit()
     bm25.rebuild_from_db(db)
     try:
-        Path(doc.stored_path).unlink(missing_ok=True)
+        resolve_stored_path(doc.stored_path).unlink(missing_ok=True)
     except OSError:  # noqa: BLE001
         logger.warning("删除磁盘文件失败: %s", doc.stored_path)
 

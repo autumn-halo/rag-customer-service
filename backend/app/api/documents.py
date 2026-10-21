@@ -64,7 +64,7 @@ async def upload_documents(
             raise
         doc = Document(
             filename=f.filename,
-            stored_path=str(dest),
+            stored_path=stored_name,  # 存相对路径：数据目录整体可移植（Windows ↔ Docker）
             file_type=ext,
             file_size=size,
             uploader_id=user.id,

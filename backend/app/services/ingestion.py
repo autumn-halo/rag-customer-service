@@ -1,6 +1,5 @@
 """入库流水线：解析 → 分块 → 写库 → 批量向量化 → 写 Chroma → 重建 BM25。"""
 import logging
-from pathlib import Path
 
 import tenacity
 from sqlalchemy.orm import Session
@@ -12,6 +11,7 @@ from app.rag import bm25, vectorstore
 from app.rag.embeddings import get_embeddings
 from app.rag.loader import DocumentParseError, parse_document
 from app.rag.splitter import split_pages
+from app.utils.file import resolve_stored_path
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def ingest_document(db: Session, doc: Document) -> None:
 
 def _do_ingest(db: Session, doc: Document) -> None:
     # 1. 解析
-    pages = parse_document(Path(doc.stored_path), doc.file_type)
+    pages = parse_document(resolve_stored_path(doc.stored_path), doc.file_type)
     # 2. 分块
     pieces = split_pages(pages)
     if not pieces:
