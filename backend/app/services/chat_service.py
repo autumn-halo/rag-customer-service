@@ -12,6 +12,7 @@
 """
 import asyncio
 import logging
+import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy import select
@@ -84,6 +85,12 @@ def _save_assistant(
     return msg
 
 
+def _filter_cited_references(references: list[dict], answer: str) -> list[dict]:
+    """按答案里实际出现的 [n] 角标过滤引用，保证列表与回答一致。"""
+    cited = {int(n) for n in re.findall(r"\[(\d+)\]", answer)}
+    return [r for r in references if r["index"] in cited]
+
+
 def _build_references(db: Session, docs: list) -> list[dict]:
     """把检索结果转成引用快照（前端与提示词共用），编号与 prompt 中 [n] 一一对应。"""
     if not docs:
@@ -144,7 +151,9 @@ async def _stream_llm(
         logger.exception("模型生成失败")
         yield _sse_error("模型服务暂不可用，请稍后重试")
         return
-    msg = _save_assistant(db, conv, full_text, references, token_count)
+    # 只保留答案里实际引用到的条目（meta 里的候选列表供流式过程参考）
+    cited_refs = _filter_cited_references(references, full_text)
+    msg = _save_assistant(db, conv, full_text, cited_refs, token_count)
     cache.get_cache().set(cache_key, full_text, settings.cache_ttl_seconds)
     yield _sse_done(msg.id, token_count)
 

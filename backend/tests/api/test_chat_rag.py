@@ -174,6 +174,68 @@ def test_keywordless_product_question_goes_strict_with_citations(client, auth_he
     assert events[0][1]["citations"][0]["document_title"] == "商品-无线蓝牙耳机Pro.txt"
 
 
+def test_citations_filtered_to_actually_cited(client, auth_headers, monkeypatch):
+    """引用列表只保留答案中实际出现的 [n] 角标，与回答严格对应。"""
+    cache.get_cache().clear()
+    doc = _seed_document()
+    chunks = [
+        Document(
+            page_content=f"资料内容{i}",
+            metadata={
+                "chunk_id": i,
+                "chroma_id": f"c{i}",
+                "document_id": doc.id,
+                "rerank_score": 0.9,
+            },
+        )
+        for i in (1, 2)
+    ]
+    _patch_retriever(monkeypatch, chunks)
+    monkeypatch.setattr(
+        chat_service, "get_chat_model",
+        lambda: FakeChatModel(answers=["根据资料[2]，答案在此。"]),
+    )
+
+    headers = auth_headers("alice")
+    resp = client.post(
+        "/api/chat/stream", json={"message": "退货流程是什么"}, headers=headers
+    )
+    events = _parse_sse(resp.text)
+
+    meta = events[0][1]
+    assert len(meta["citations"]) == 2  # meta 携带全部候选（流式过程参考）
+
+    # 落库的引用快照只保留答案里真正引用的 [2]
+    conv_id = meta["conversation_id"]
+    msgs = client.get(f"/api/conversations/{conv_id}/messages", headers=headers).json()
+    assistant = [m for m in msgs if m["role"] == "assistant"][0]
+    assert [r["index"] for r in assistant["references"]] == [2]
+
+
+def test_no_citation_marker_means_no_citations(client, auth_headers, monkeypatch):
+    """答案没有 [n] 角标时，引用列表应为空。"""
+    cache.get_cache().clear()
+    doc = _seed_document()
+    chunk = Document(
+        page_content="资料内容",
+        metadata={"chunk_id": 1, "chroma_id": "c", "document_id": doc.id, "rerank_score": 0.9},
+    )
+    _patch_retriever(monkeypatch, [chunk])
+    monkeypatch.setattr(
+        chat_service, "get_chat_model",
+        lambda: FakeChatModel(answers=["根据现有资料暂时无法解答，建议联系人工客服。"]),
+    )
+
+    headers = auth_headers("alice")
+    resp = client.post(
+        "/api/chat/stream", json={"message": "退货流程是什么"}, headers=headers
+    )
+    conv_id = _parse_sse(resp.text)[0][1]["conversation_id"]
+    msgs = client.get(f"/api/conversations/{conv_id}/messages", headers=headers).json()
+    assistant = [m for m in msgs if m["role"] == "assistant"][0]
+    assert assistant["references"] is None or assistant["references"] == []
+
+
 def test_greeting_with_low_score_doc_goes_plain(client, auth_headers, monkeypatch):
     """问候语即使检索到低相关度的文档（<阈值），也应走自由对话、不带引用。"""
     cache.get_cache().clear()
