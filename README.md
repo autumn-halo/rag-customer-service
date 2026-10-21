@@ -17,6 +17,16 @@
 
 ## 快速启动
 
+### 方式一：双击脚本（推荐，Windows）
+
+1. 双击 `start-backend.bat` 启动后端（黑窗口别关，接口文档 http://localhost:8000/docs）
+2. 双击 `start-frontend.bat` 启动前端
+3. 浏览器打开 http://localhost:5173
+
+> 管理员账号：`admin / 123456`
+
+### 方式二：手动命令
+
 ```bash
 # 1. 配置环境变量
 cp .env.example backend/.env   # 然后填入你的 DASHSCOPE_API_KEY
@@ -28,7 +38,7 @@ python -m venv .venv
 pip install -r requirements.txt
 uvicorn app.main:app --reload  # http://localhost:8000
 
-# 3. 前端（后续阶段）
+# 3. 前端
 cd frontend
 npm install
 npm run dev                    # http://localhost:5173
