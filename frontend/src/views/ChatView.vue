@@ -2,14 +2,14 @@
 import { nextTick, onMounted, ref, watch } from 'vue'
 
 import ChatMessage from '@/components/ChatMessage.vue'
+import CitationList from '@/components/CitationList.vue'
 import ConversationList from '@/components/ConversationList.vue'
-import SourcePanel from '@/components/SourcePanel.vue'
 import { useChatStore } from '@/stores/chat'
 
 const chat = useChatStore()
 const input = ref('')
 const messageBoxRef = ref()
-const showSources = ref(true)
+const streamActiveNames = ref([]) // 流式回答中引用折叠的展开状态
 
 onMounted(() => chat.loadConversations())
 
@@ -60,7 +60,6 @@ function onKeydown(e) {
     <section class="chat-main">
       <header class="chat-header">
         <span class="chat-title">{{ chat.currentTitle || '新对话' }}</span>
-        <el-switch v-model="showSources" size="small" active-text="引用来源" />
       </header>
 
       <div ref="messageBoxRef" class="message-box">
@@ -80,6 +79,10 @@ function onKeydown(e) {
             <div class="msg-bubble assistant-bubble">
               {{ chat.streamingText }}<span class="cursor">▌</span>
             </div>
+            <CitationList
+              v-model:active-names="streamActiveNames"
+              :citations="chat.citations"
+            />
           </div>
         </div>
       </div>
@@ -103,10 +106,6 @@ function onKeydown(e) {
         </div>
       </footer>
     </section>
-
-    <aside v-if="showSources" class="source-aside">
-      <SourcePanel :citations="chat.citations" />
-    </aside>
   </div>
 </template>
 
@@ -188,11 +187,6 @@ function onKeydown(e) {
   justify-content: flex-end;
 }
 
-.source-aside {
-  width: 300px;
-  flex-shrink: 0;
-}
-
 /* 流式生成中的消息样式（与 ChatMessage 内保持一致） */
 .msg-row {
   display: flex;
@@ -213,6 +207,8 @@ function onKeydown(e) {
 
 .msg-body {
   max-width: 76%;
+  display: flex;
+  flex-direction: column;
 }
 
 .msg-bubble {

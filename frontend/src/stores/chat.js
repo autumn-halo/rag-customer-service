@@ -32,9 +32,6 @@ export const useChatStore = defineStore('chat', {
       const { data } = await http.get(`/conversations/${id}/messages`)
       this.messages = data
       this.currentTitle = this.currentConversation?.title || ''
-      // 历史会话：面板显示最后一条回答的引用（若有）
-      const lastAssistant = [...this.messages].reverse().find((m) => m.role === 'assistant')
-      this.citations = lastAssistant?.references || []
     },
     newConversation() {
       this.currentId = null

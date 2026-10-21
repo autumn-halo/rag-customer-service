@@ -1,6 +1,8 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import MarkdownIt from 'markdown-it'
+
+import CitationList from '@/components/CitationList.vue'
 
 // html: false 防止回答中的 HTML 被注入执行（XSS 防护）
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
@@ -10,7 +12,31 @@ const props = defineProps({
 })
 
 const isUser = computed(() => props.message.role === 'user')
-const rendered = computed(() => md.render(props.message.content || ''))
+const refs = computed(() => props.message.references || [])
+const activeNames = ref([])
+
+// 把 [n] 角标替换成可点击的 sup；历史消息的引用快照存在消息记录里
+const rendered = computed(() => {
+  let html = md.render(props.message.content || '')
+  if (!isUser.value && refs.value.length) {
+    html = html.replace(/\[(\d+)\]/g, (match, n) => {
+      return refs.value.some((r) => String(r.index) === n)
+        ? `<sup class="cite-link" data-cite="${n}">[${n}]</sup>`
+        : match
+    })
+  }
+  return html
+})
+
+// 事件委托：点击 [n] 角标展开/收起对应引用
+function onContentClick(e) {
+  const el = e.target.closest('.cite-link')
+  if (!el) return
+  const name = el.dataset.cite
+  activeNames.value = activeNames.value.includes(name)
+    ? activeNames.value.filter((n) => n !== name)
+    : [...activeNames.value, name]
+}
 </script>
 
 <template>
@@ -20,7 +46,14 @@ const rendered = computed(() => md.render(props.message.content || ''))
     </el-avatar>
     <div class="msg-body">
       <div v-if="isUser" class="msg-bubble user-bubble">{{ message.content }}</div>
-      <div v-else class="msg-bubble assistant-bubble markdown-body" v-html="rendered"></div>
+      <template v-else>
+        <div
+          class="msg-bubble assistant-bubble markdown-body"
+          v-html="rendered"
+          @click="onContentClick"
+        ></div>
+        <CitationList v-model:active-names="activeNames" :citations="refs" />
+      </template>
       <div v-if="!isUser" class="msg-meta">
         <span v-if="message.interrupted" class="interrupted">已停止生成</span>
         <span v-if="message.token_count" class="tokens">{{ message.token_count }} tokens</span>
@@ -97,6 +130,18 @@ const rendered = computed(() => md.render(props.message.content || ''))
 
 .interrupted {
   color: #e6a23c;
+}
+
+/* 可点击的引用角标 */
+.cite-link {
+  color: #409eff;
+  cursor: pointer;
+  font-weight: 600;
+  margin: 0 1px;
+}
+
+.cite-link:hover {
+  text-decoration: underline;
 }
 
 /* markdown 渲染样式 */
