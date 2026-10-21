@@ -155,7 +155,7 @@ async def _stream_llm(
     cited_refs = _filter_cited_references(references, full_text)
     msg = _save_assistant(db, conv, full_text, cited_refs, token_count)
     cache.get_cache().set(cache_key, full_text, settings.cache_ttl_seconds)
-    yield _sse_done(msg.id, token_count)
+    yield _sse_done(msg.id, token_count, cited_refs)
 
 
 async def stream_chat(
@@ -200,7 +200,7 @@ async def stream_chat(
             async for event in _stream_text(cached_text):
                 yield event
             msg = _save_assistant(db, conv, cached_text, [], None)
-            yield _sse_done(msg.id, None)
+            yield _sse_done(msg.id, None, [])
             return
         yield _meta_event(cached=False, citations=[], conversation_id=conv.id)
         messages = [
@@ -217,7 +217,7 @@ async def stream_chat(
         async for event in _stream_text(prompt.FALLBACK_ANSWER):
             yield event
         msg = _save_assistant(db, conv, prompt.FALLBACK_ANSWER, [], None)
-        yield _sse_done(msg.id, None)
+        yield _sse_done(msg.id, None, [])
         return
 
     # 3c. 严格模式：依据参考资料作答，强制引用格式
@@ -226,8 +226,9 @@ async def stream_chat(
         yield _meta_event(cached=True, citations=references, conversation_id=conv.id)
         async for event in _stream_text(cached_text):
             yield event
-        msg = _save_assistant(db, conv, cached_text, references, None)
-        yield _sse_done(msg.id, None)
+        cited_refs = _filter_cited_references(references, cached_text)
+        msg = _save_assistant(db, conv, cached_text, cited_refs, None)
+        yield _sse_done(msg.id, None, cited_refs)
         return
 
     yield _meta_event(cached=False, citations=references, conversation_id=conv.id)
@@ -243,5 +244,9 @@ def _sse_error(detail: str) -> dict:
     return {"event": "error", "data": {"detail": detail}}
 
 
-def _sse_done(message_id: int, token_count: int | None) -> dict:
-    return {"event": "done", "data": {"message_id": message_id, "token_count": token_count}}
+def _sse_done(message_id: int, token_count: int | None, citations: list[dict]) -> dict:
+    """done 事件携带最终引用列表（已按答案角标过滤），前端以它为准展示。"""
+    return {
+        "event": "done",
+        "data": {"message_id": message_id, "token_count": token_count, "citations": citations},
+    }

@@ -205,7 +205,10 @@ def test_citations_filtered_to_actually_cited(client, auth_headers, monkeypatch)
     meta = events[0][1]
     assert len(meta["citations"]) == 2  # meta 携带全部候选（流式过程参考）
 
-    # 落库的引用快照只保留答案里真正引用的 [2]
+    # done 事件与落库的引用快照只保留答案里真正引用的 [2]
+    done = events[-1][1]
+    assert [c["index"] for c in done["citations"]] == [2]
+
     conv_id = meta["conversation_id"]
     msgs = client.get(f"/api/conversations/{conv_id}/messages", headers=headers).json()
     assistant = [m for m in msgs if m["role"] == "assistant"][0]

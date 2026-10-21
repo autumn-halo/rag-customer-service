@@ -86,15 +86,16 @@ export const useChatStore = defineStore('chat', {
       } else if (event === 'delta') {
         this.streamingText += data.content
       } else if (event === 'done') {
+        // 引用以后端过滤后的最终列表为准（与答案中的 [n] 角标严格对应）
         this.messages.push({
           id: data.message_id,
           role: 'assistant',
           content: this.streamingText,
-          references: this.citations,
+          references: data.citations || [],
           token_count: data.token_count,
         })
         this.streamingText = ''
-        // 引用面板继续展示本次回答的引用（下次发送新问题时才会重置）
+        this.citations = data.citations || []
       } else if (event === 'error') {
         if (this.streamingText) {
           this.messages.push({
