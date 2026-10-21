@@ -1,6 +1,4 @@
-"""chat_service 内部逻辑单元测试：会话创建、历史截断、消息映射。"""
-from langchain_core.messages import AIMessage, HumanMessage
-
+"""chat_service 内部逻辑单元测试：会话创建、历史截断。"""
 from app.database import SessionLocal
 from app.models.conversation import Conversation
 from app.models.message import Message
@@ -70,14 +68,3 @@ def test_load_history_limits_turns_and_orders_chronologically():
         # turns=2 → 只取最近 4 条（2 问 2 答），且按时间正序返回
         history = chat_service._load_history(db, conv.id, turns=2)
         assert [m["content"] for m in history] == ["消息6", "消息7", "消息8", "消息9"]
-
-
-def test_history_to_messages_maps_roles():
-    msgs = chat_service._history_to_messages(
-        [
-            {"role": "user", "content": "q"},
-            {"role": "assistant", "content": "a"},
-        ]
-    )
-    assert isinstance(msgs[0], HumanMessage)
-    assert isinstance(msgs[1], AIMessage)

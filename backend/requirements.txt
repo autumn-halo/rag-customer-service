@@ -11,6 +11,7 @@ pydantic-settings
 
 # ===== LangChain 生态（核心框架）=====
 langchain
+langchain-text-splitters  # 分块工具（LangChain 1.x 起拆分为独立包）
 langchain-openai          # 走 DashScope 的 OpenAI 兼容模式
 langchain-chroma          # Chroma 向量库的 LangChain 封装
 chromadb                  # 向量数据库

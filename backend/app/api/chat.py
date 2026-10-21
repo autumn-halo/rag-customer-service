@@ -6,10 +6,12 @@
 import json
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_user
+from app.config import settings
+from app.core.rate_limit import SlidingWindowRateLimiter
 from app.database import SessionLocal
 from app.models.user import User
 from app.schemas.chat import ChatRequest
@@ -19,13 +21,22 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
+# 每个用户每分钟最多 N 次提问（防刷接口）
+_chat_limiter = SlidingWindowRateLimiter(settings.rate_limit_chat_per_min)
+
+
+def check_chat_rate(user: User = Depends(get_current_user)) -> User:
+    if not _chat_limiter.allow(f"user:{user.id}"):
+        raise HTTPException(status_code=429, detail="提问太频繁了，请稍后再试")
+    return user
+
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 @router.post("/stream")
-async def chat_stream(body: ChatRequest, user: User = Depends(get_current_user)):
+async def chat_stream(body: ChatRequest, user: User = Depends(check_chat_rate)):
     """流式问答。任何异常都转成 error 事件，绝不让流中断成 500。"""
 
     async def event_stream():

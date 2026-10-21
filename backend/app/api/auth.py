@@ -1,15 +1,20 @@
 """注册 / 登录 / 查询当前用户。"""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.config import settings
+from app.core.rate_limit import SlidingWindowRateLimiter
 from app.core.security import create_access_token, hash_password, verify_password
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user import LoginRequest, RegisterRequest, TokenResponse, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# 每个 IP 每分钟最多 N 次登录尝试（防暴力破解）
+_login_limiter = SlidingWindowRateLimiter(settings.rate_limit_login_per_min)
 
 
 @router.post("/register", response_model=UserOut)
@@ -25,7 +30,9 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(body: LoginRequest, db: Session = Depends(get_db)):
+def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    if not _login_limiter.allow(request.client.host or "unknown"):
+        raise HTTPException(status_code=429, detail="登录尝试过于频繁，请稍后再试")
     user = db.scalar(select(User).where(User.username == body.username))
     # 用户不存在与密码错误返回同一句话，避免被试探出"哪些用户名存在"
     if user is None or not verify_password(body.password, user.password_hash):

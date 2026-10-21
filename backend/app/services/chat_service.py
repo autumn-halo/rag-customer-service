@@ -1,20 +1,33 @@
-"""聊天编排：会话创建、历史加载、模型流式回答、消息落库。
+"""聊天编排：检索知识库 → 组装提示词 → 流式回答 → 引用与消息落库。
 
-阶段 3 为纯对话骨架；阶段 4 接入 RAG 检索后，本模块在生成答案前
-先检索知识库并把引用片段注入 prompt。
+主流程：
+1. 会话归属校验（新建则自动建会话，标题取首问前 20 字）
+2. 保存用户消息
+3. 混合检索 + 重排（失败降级不中断聊天）
+4. 相关度过低 → 兜底话术（不调 LLM）；否则 → 缓存命中直接流式返回 / LLM 流式生成
+5. 保存助手消息（含引用快照与 token 用量），刷新缓存
 """
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+import asyncio
+import logging
+
+from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.base import utcnow
 from app.models.conversation import Conversation
+from app.models.document import Document
 from app.models.message import Message
 from app.models.user import User
+from app.rag import prompt
 from app.rag.chain import get_chat_model
+from app.rag.retriever import get_retriever
+from app.services import cache
 
-SYSTEM_PROMPT = "你是「XX商城」的智能客服助手，请用简体中文亲切、专业地回答用户问题。"
+logger = logging.getLogger(__name__)
+
+STREAM_CHUNK_SIZE = 20  # 缓存命中/兜底话术按此字符数模拟流式输出
 
 
 class ConversationNotFoundError(Exception):
@@ -51,13 +64,58 @@ def _load_history(db: Session, conversation_id: int, turns: int) -> list[dict]:
     return [{"role": m.role, "content": m.content} for m in reversed(rows)]
 
 
-def _history_to_messages(history: list[dict]) -> list:
-    return [
-        HumanMessage(content=m["content"])
-        if m["role"] == "user"
-        else AIMessage(content=m["content"])
-        for m in history
-    ]
+def _save_assistant(
+    db: Session, conv: Conversation, content: str, references: list[dict], token_count: int | None
+) -> Message:
+    msg = Message(
+        conversation_id=conv.id,
+        role="assistant",
+        content=content,
+        references=references or None,
+        token_count=token_count,
+    )
+    db.add(msg)
+    conv.updated_at = utcnow()
+    db.commit()
+    db.refresh(msg)
+    return msg
+
+
+def _build_references(db: Session, docs: list) -> list[dict]:
+    """把检索结果转成引用快照（前端与提示词共用），编号与 prompt 中 [n] 一一对应。"""
+    if not docs:
+        return []
+    doc_ids = {d.metadata["document_id"] for d in docs if d.metadata.get("document_id")}
+    titles = {
+        d.id: d.filename
+        for d in db.scalars(select(Document).where(Document.id.in_(doc_ids)))
+    } if doc_ids else {}
+    references = []
+    for i, d in enumerate(docs, start=1):
+        references.append(
+            {
+                "index": i,
+                "chunk_id": d.metadata.get("chunk_id"),
+                "document_id": d.metadata.get("document_id"),
+                "document_title": titles.get(d.metadata.get("document_id"), "未知文档"),
+                "score": round(float(d.metadata.get("rerank_score", 0.0)), 4),
+                "content": d.page_content,
+            }
+        )
+    return references
+
+
+def _meta_event(cached: bool, citations: list[dict], conversation_id: int) -> dict:
+    return {
+        "event": "meta",
+        "data": {"cached": cached, "citations": citations, "conversation_id": conversation_id},
+    }
+
+
+async def _stream_text(text: str):
+    """把一段完整文本切成小块模拟流式输出（缓存命中/兜底话术用）。"""
+    for i in range(0, len(text), STREAM_CHUNK_SIZE):
+        yield {"event": "delta", "data": {"content": text[i : i + STREAM_CHUNK_SIZE]}}
 
 
 async def stream_chat(
@@ -74,38 +132,75 @@ async def stream_chat(
     conv.updated_at = utcnow()
     db.commit()
 
-    yield {
-        "event": "meta",
-        "data": {"cached": False, "citations": [], "conversation_id": conv.id},
-    }
-
-    # 2. 组装提示词：系统设定 + 最近几轮历史 + 当前问题
     history = _load_history(db, conv.id, settings.history_turns)
-    messages = [SystemMessage(content=SYSTEM_PROMPT), *_history_to_messages(history)]
-    messages.append(HumanMessage(content=question))
 
-    # 3. 流式生成答案
+    # 2. RAG：检索知识库（检索异常时中断并返回"系统繁忙"，绝不让聊天 500）
+    try:
+        docs = await asyncio.to_thread(get_retriever().invoke, question)
+    except Exception:  # noqa: BLE001
+        logger.exception("检索链路异常")
+        yield _sse_error("系统繁忙，请稍后重试")
+        return
+
+    chroma_ids = [d.metadata.get("chroma_id") or "" for d in docs]
+    references = prompt.fit_context(_build_references(db, docs), settings.context_max_chars)
+
+    # 3. 兜底：检索到资料但重排最高分低于阈值 → 不调 LLM，直接固定话术
+    best_score = docs[0].metadata.get("rerank_score") if docs else None
+    if docs and best_score is not None and best_score < settings.rerank_threshold:
+        yield _meta_event(cached=False, citations=[], conversation_id=conv.id)
+        async for event in _stream_text(prompt.FALLBACK_ANSWER):
+            yield event
+        msg = _save_assistant(db, conv, prompt.FALLBACK_ANSWER, [], None)
+        yield _sse_done(msg.id, None)
+        return
+
+    # 4. 答案缓存：相同问题 + 相同引用集合 → 秒回
+    cache_key = cache.chat_cache_key(settings.model_chat, question, chroma_ids)
+    cached_text = cache.get_cache().get(cache_key)
+    if cached_text is not None:
+        yield _meta_event(cached=True, citations=references, conversation_id=conv.id)
+        async for event in _stream_text(cached_text):
+            yield event
+        msg = _save_assistant(db, conv, cached_text, references, None)
+        yield _sse_done(msg.id, None)
+        return
+
+    # 5. 组装提示词：有引用走"严格依据资料"模板，无引用走自由对话模板
+    system = prompt.SYSTEM_PROMPT_RAG if references else prompt.SYSTEM_PROMPT_PLAIN
+    history_text = prompt.format_history(history)
+    messages = [
+        SystemMessage(content=system),
+        HumanMessage(content=prompt.build_user_prompt(references, history_text, question)),
+    ]
+
+    # 6. 流式生成答案
     llm = get_chat_model()
     full_text = ""
     token_count = None
-    async for chunk in llm.astream(messages):
-        text = chunk.content or ""
-        full_text += text
-        yield {"event": "delta", "data": {"content": text}}
-        usage = getattr(chunk, "usage_metadata", None)
-        if usage:
-            token_count = usage.get("total_tokens")
+    try:
+        yield _meta_event(cached=False, citations=references, conversation_id=conv.id)
+        async for chunk in llm.astream(messages):
+            text = chunk.content or ""
+            full_text += text
+            yield {"event": "delta", "data": {"content": text}}
+            usage = getattr(chunk, "usage_metadata", None)
+            if usage:
+                token_count = usage.get("total_tokens")
+    except Exception:  # noqa: BLE001
+        logger.exception("模型生成失败")
+        yield _sse_error("模型服务暂不可用，请稍后重试")
+        return
 
-    # 4. 保存助手消息（含 token 用量）
-    assistant_msg = Message(
-        conversation_id=conv.id,
-        role="assistant",
-        content=full_text,
-        token_count=token_count,
-    )
-    db.add(assistant_msg)
-    conv.updated_at = utcnow()
-    db.commit()
-    db.refresh(assistant_msg)
+    # 7. 保存助手消息（含引用快照与 token 用量）+ 写缓存
+    msg = _save_assistant(db, conv, full_text, references, token_count)
+    cache.get_cache().set(cache_key, full_text, settings.cache_ttl_seconds)
+    yield _sse_done(msg.id, token_count)
 
-    yield {"event": "done", "data": {"message_id": assistant_msg.id, "token_count": token_count}}
+
+def _sse_error(detail: str) -> dict:
+    return {"event": "error", "data": {"detail": detail}}
+
+
+def _sse_done(message_id: int, token_count: int | None) -> dict:
+    return {"event": "done", "data": {"message_id": message_id, "token_count": token_count}}

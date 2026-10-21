@@ -6,11 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api import auth, chat, conversations, users
+from app.api import auth, chat, conversations, documents, users
 from app.config import settings
 from app.core.security import hash_password
 from app.database import Base, SessionLocal, engine
 from app.models import User
+from app.rag import bm25
+from app.services import queue
 
 
 def _seed_admin(db: Session) -> None:
@@ -29,13 +31,19 @@ def _seed_admin(db: Session) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动：建目录、建表、播种管理员、启动后台入库 worker（入库 worker 在阶段 4 加入）
+    # 启动：建目录、建表、播种管理员、恢复 BM25 索引、重启后台入库 worker
     settings.ensure_runtime_dirs()
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         _seed_admin(db)
+        stale_ids = queue.recover_stale(db)
+        bm25.rebuild_from_db(db)
+    queue.start_worker()
+    for doc_id in stale_ids:
+        queue.enqueue(doc_id)
     yield
-    # 关闭：清理任务（阶段 4 加入）
+    # 关闭：停止后台入库 worker
+    await queue.stop_worker()
 
 
 app = FastAPI(
@@ -56,6 +64,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(conversations.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
+app.include_router(documents.router, prefix="/api")
 
 
 @app.get("/")
