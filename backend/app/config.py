@@ -23,8 +23,9 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1024
     model_rerank: str = "qwen3-rerank"
     rerank_top_n: int = 5
-    # qwen3-rerank 评分范围 0~1；低于此值判定"知识库无相关资料"
-    rerank_threshold: float = 0.15
+    # qwen3-rerank 评分范围 0~1。≥阈值 → 检索结果可信，严格模式带引用作答；
+    # <阈值 → 按意图分流（商品关键词 → 兜底话术；其他 → 自由对话）
+    rerank_threshold: float = 0.35
 
     # ---- 安全 ----
     jwt_secret: str = "dev-secret-change-me"

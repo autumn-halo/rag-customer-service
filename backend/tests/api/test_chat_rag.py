@@ -129,14 +129,9 @@ def test_low_score_falls_back_without_llm(client, auth_headers, monkeypatch):
 
 
 def test_meta_question_goes_plain_path_without_retrieval(client, auth_headers, monkeypatch):
-    """闲聊问题（如"你是什么大模型"）不检索知识库，直接自由对话。"""
+    """闲聊问题（如"你是什么大模型"）：检索无相关资料 → 自由对话，不带引用。"""
     cache.get_cache().clear()
-
-    class _BoomRetriever:
-        def invoke(self, query):  # noqa: ARG002
-            raise AssertionError("闲聊问题不应触发检索")
-
-    monkeypatch.setattr(chat_service, "get_retriever", lambda: _BoomRetriever())
+    _patch_retriever(monkeypatch, [])  # 检索无命中
     monkeypatch.setattr(
         chat_service, "get_chat_model",
         lambda: FakeChatModel(answers=["我是通义千问，阿里巴巴自研的大语言模型。"]),
@@ -149,6 +144,56 @@ def test_meta_question_goes_plain_path_without_retrieval(client, auth_headers, m
     assert events[0][1]["citations"] == []  # 自由对话不带引用
     full = "".join(e[1]["content"] for e in events if e[0] == "delta")
     assert "通义千问" in full
+
+
+def test_keywordless_product_question_goes_strict_with_citations(client, auth_headers, monkeypatch):
+    """回归测试：不含任何商品关键词的产品问题（如"续航多久"），
+    只要检索相关度高就必须走严格模式带引用，绝不允许模型自由发挥。"""
+    cache.get_cache().clear()
+    doc = _seed_document("商品-无线蓝牙耳机Pro.txt")
+    chunk = Document(
+        page_content="续航：单次 8 小时，配合充电仓共 36 小时。",
+        metadata={
+            "chunk_id": 1,
+            "chroma_id": "doc_1_chunk_0",
+            "document_id": doc.id,
+            "rerank_score": 0.9,
+        },
+    )
+    _patch_retriever(monkeypatch, [chunk])
+    monkeypatch.setattr(
+        chat_service, "get_chat_model",
+        lambda: FakeChatModel(answers=["根据资料[1]，单次续航 8 小时，配合充电仓共 36 小时。"]),
+    )
+
+    resp = client.post(
+        "/api/chat/stream", json={"message": "无线蓝牙耳机续航多久"}, headers=auth_headers("alice")
+    )
+    events = _parse_sse(resp.text)
+    assert events[0][1]["citations"], "相关度高必须走严格模式带引用"
+    assert events[0][1]["citations"][0]["document_title"] == "商品-无线蓝牙耳机Pro.txt"
+
+
+def test_greeting_with_low_score_doc_goes_plain(client, auth_headers, monkeypatch):
+    """问候语即使检索到低相关度的文档（<阈值），也应走自由对话、不带引用。"""
+    cache.get_cache().clear()
+    doc = _seed_document()
+    chunk = Document(
+        page_content="退货政策内容",
+        metadata={"chunk_id": 1, "chroma_id": "c", "document_id": doc.id, "rerank_score": 0.2},
+    )
+    _patch_retriever(monkeypatch, [chunk])
+    monkeypatch.setattr(
+        chat_service, "get_chat_model", lambda: FakeChatModel(answers=["你好呀，有什么可以帮你？"])
+    )
+
+    resp = client.post(
+        "/api/chat/stream", json={"message": "你好呀"}, headers=auth_headers("alice")
+    )
+    events = _parse_sse(resp.text)
+    assert events[0][1]["citations"] == []  # 低相关度问候不带引用
+    full = "".join(e[1]["content"] for e in events if e[0] == "delta")
+    assert "你好" in full
 
 
 def test_cache_hit_second_time(client, auth_headers, monkeypatch):

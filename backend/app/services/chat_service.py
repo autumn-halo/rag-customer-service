@@ -1,12 +1,14 @@
-"""聊天编排：意图分流 → 检索/自由对话 → 流式回答 → 引用与消息落库。
+"""聊天编排：检索 → 路由分流 → 流式回答 → 引用与消息落库。
 
-主流程（意图分流）：
+主流程（检索优先、关键词兜底）：
 1. 会话归属校验（新建则自动建会话，标题取首问前 20 字），保存用户消息
-2. 意图识别：
-   - 商品/售后咨询 → 检索知识库；相关度过低或无结果 → 兜底话术（不调 LLM）
-   - 闲聊/通用问题 → 自由对话（不检索、不引用）
-3. 答案缓存：相同问题 + 相同引用集合 → 秒回
-4. 流式生成 → 保存助手消息（含引用快照与 token 用量）→ 写缓存
+2. 检索知识库（任何措辞的商品问题都由检索相关度说话）
+3. 路由分流：
+   - 相关度 ≥ 阈值 → 严格模式：依据资料作答、强制 [n] 引用
+   - 相关度不足 + 商品关键词 → 兜底话术（不调 LLM，防瞎编）
+   - 相关度不足 + 非商品 → 自由对话（"你是什么大模型"这类问题自然回答）
+4. 答案缓存：相同问题 + 相同引用集合 → 秒回
+5. 流式生成 → 保存助手消息（含引用快照与 token 用量）→ 写缓存
 """
 import asyncio
 import logging
@@ -162,11 +164,28 @@ async def stream_chat(
     db.commit()
 
     history_text = prompt.format_history(_load_history(db, conv.id, settings.history_turns))
-    cache_key = cache.chat_cache_key(settings.model_chat, question, [])
+    plain_cache_key = cache.chat_cache_key(settings.model_chat, question, [])
 
-    # 2. 意图分流：闲聊/通用问题不检索知识库，直接自由对话
-    if not intent.is_product_question(question):
-        cached_text = cache.get_cache().get(cache_key)
+    # 2. 检索知识库（检索异常时中断并返回"系统繁忙"，绝不让聊天 500）
+    try:
+        docs = await asyncio.to_thread(get_retriever().invoke, question)
+    except Exception:  # noqa: BLE001
+        logger.exception("检索链路异常")
+        yield _sse_error("系统繁忙，请稍后重试")
+        return
+
+    chroma_ids = [d.metadata.get("chroma_id") or "" for d in docs]
+    references = prompt.fit_context(_build_references(db, docs), settings.context_max_chars)
+    cache_key = cache.chat_cache_key(settings.model_chat, question, chroma_ids)
+
+    # 3. 路由分流：检索相关度优先，关键词兜底
+    best_score = docs[0].metadata.get("rerank_score") if docs else None
+    # 重排降级时 best_score 为 None：视为相关（保留 RRF 排序结果，不误伤）
+    relevant = bool(docs) and (best_score is None or best_score >= settings.rerank_threshold)
+
+    if not relevant and not intent.is_product_question(question):
+        # 3a. 自由对话：检索不到相关资料且不是商品问题（如"你是什么大模型"）
+        cached_text = cache.get_cache().get(plain_cache_key)
         if cached_text is not None:
             yield _meta_event(cached=True, citations=[], conversation_id=conv.id)
             async for event in _stream_text(cached_text):
@@ -179,25 +198,12 @@ async def stream_chat(
             SystemMessage(content=prompt.SYSTEM_PROMPT_PLAIN),
             HumanMessage(content=prompt.build_plain_user_prompt(history_text, question)),
         ]
-        async for event in _stream_llm(db, conv, messages, [], cache_key):
+        async for event in _stream_llm(db, conv, messages, [], plain_cache_key):
             yield event
         return
 
-    # 3. 商品咨询：检索知识库（检索异常时中断并返回"系统繁忙"，绝不让聊天 500）
-    try:
-        docs = await asyncio.to_thread(get_retriever().invoke, question)
-    except Exception:  # noqa: BLE001
-        logger.exception("检索链路异常")
-        yield _sse_error("系统繁忙，请稍后重试")
-        return
-
-    chroma_ids = [d.metadata.get("chroma_id") or "" for d in docs]
-    references = prompt.fit_context(_build_references(db, docs), settings.context_max_chars)
-    cache_key = cache.chat_cache_key(settings.model_chat, question, chroma_ids)
-
-    # 4. 兜底：无相关资料或重排最高分低于阈值 → 不调 LLM，直接固定话术
-    best_score = docs[0].metadata.get("rerank_score") if docs else None
-    if not docs or (best_score is not None and best_score < settings.rerank_threshold):
+    if not relevant:
+        # 3b. 兜底：商品咨询但无相关资料 → 不调 LLM，直接固定话术
         yield _meta_event(cached=False, citations=[], conversation_id=conv.id)
         async for event in _stream_text(prompt.FALLBACK_ANSWER):
             yield event
@@ -205,7 +211,7 @@ async def stream_chat(
         yield _sse_done(msg.id, None)
         return
 
-    # 5. 答案缓存：相同问题 + 相同引用集合 → 秒回
+    # 3c. 严格模式：依据参考资料作答，强制引用格式
     cached_text = cache.get_cache().get(cache_key)
     if cached_text is not None:
         yield _meta_event(cached=True, citations=references, conversation_id=conv.id)
@@ -215,7 +221,6 @@ async def stream_chat(
         yield _sse_done(msg.id, None)
         return
 
-    # 6. 严格模式：依据参考资料作答，强制引用格式
     yield _meta_event(cached=False, citations=references, conversation_id=conv.id)
     messages = [
         SystemMessage(content=prompt.SYSTEM_PROMPT_RAG),

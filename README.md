@@ -119,7 +119,7 @@ cd backend
 | 用 Python 3.12 而非 3.14 | chromadb 依赖的 onnxruntime 无 3.14 的 wheel，且其依赖 pypika 使用了 3.14 已移除的 `ast.Str` |
 | 重排模型用 `qwen3-rerank` 而非 `gte-rerank` | 阿里云已下架 gte-rerank 系列，官方推荐 qwen3-rerank（走 compatible-api 通道） |
 | 向量化关闭 `check_embedding_ctx_length` | 新版 langchain-openai 默认把文字预分词成 token 编号发送，DashScope 兼容模式只收原始文字（官方推荐非 OpenAI 厂商关闭） |
-| 意图分流：关键词路由 | 商品咨询走严格检索（防瞎编），闲聊自由对话；零成本可解释，更精准方案（小模型分类）列入后续规划 |
+| 路由分流：检索优先、关键词兜底 | 检索相关度 ≥ 阈值直接严格模式带引用（覆盖任何措辞的商品问题）；相关度不足时商品关键词→兜底防瞎编、其他→自由对话。更精准方案（小模型分类）列入后续规划 |
 | BM25 用内存索引而非 SQLite FTS | 避免双检索路径维护成本；chunks 表是事实来源，重启全量重建（10 万块以下毫秒级） |
 | 不引 Redis/Celery/Milvus | 单机可跑原则；缓存与队列均以接口抽象隔离，量级增长后可无缝替换 |
 | 引用快照存消息表 | 历史消息重渲染无需再查库/查向量库，删除文档后历史回答仍可展示当时引用的原文 |
