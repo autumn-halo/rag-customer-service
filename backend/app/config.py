@@ -35,6 +35,8 @@ class Settings(BaseSettings):
 
     # ---- 存储 ----
     database_url: str = ""  # 空则使用默认 sqlite 路径
+    # SQLite WAL：开发模式开启提升并发；Docker 共享目录不支持共享内存，须关闭
+    sqlite_wal: bool = True
     chroma_dir: str = ""  # 空则使用默认路径
     upload_dir: str = ""  # 空则使用默认路径
     max_upload_mb: int = 20

@@ -32,6 +32,9 @@ export const useChatStore = defineStore('chat', {
       const { data } = await http.get(`/conversations/${id}/messages`)
       this.messages = data
       this.currentTitle = this.currentConversation?.title || ''
+      // 历史会话：面板显示最后一条回答的引用（若有）
+      const lastAssistant = [...this.messages].reverse().find((m) => m.role === 'assistant')
+      this.citations = lastAssistant?.references || []
     },
     newConversation() {
       this.currentId = null
@@ -94,7 +97,7 @@ export const useChatStore = defineStore('chat', {
           token_count: data.token_count,
         })
         this.streamingText = ''
-        this.citations = []
+        // 引用面板继续展示本次回答的引用（下次发送新问题时才会重置）
       } else if (event === 'error') {
         if (this.streamingText) {
           this.messages.push({

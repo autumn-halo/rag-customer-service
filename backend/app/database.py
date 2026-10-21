@@ -22,7 +22,9 @@ if is_sqlite:
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_connection, connection_record):  # noqa: ARG001
         cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")  # 读写并发性能更好
+        if settings.sqlite_wal:
+            # WAL 提升读写并发；Docker 共享目录不支持共享内存，由环境变量关闭
+            cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 

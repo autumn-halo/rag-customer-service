@@ -16,6 +16,9 @@ services:
       - "8000:8000"
     env_file:
       - backend/.env
+    environment:
+      # 共享目录（bind mount）不支持 WAL 所需的共享内存，容器内必须关闭
+      - SQLITE_WAL=false
     volumes:
       # SQLite / Chroma / 上传文件全部落在 data/ 子目录，一个挂载点即可持久化
       - ./backend/data:/app/data
