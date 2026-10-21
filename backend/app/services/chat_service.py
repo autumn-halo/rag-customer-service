@@ -69,20 +69,23 @@ def _load_history(db: Session, conversation_id: int, turns: int) -> list[dict]:
 
 
 def _save_assistant(
-    db: Session, conv: Conversation, content: str, references: list[dict], token_count: int | None
+    db_factory, conv_id: int, content: str, references: list[dict], token_count: int | None
 ) -> Message:
-    msg = Message(
-        conversation_id=conv.id,
-        role="assistant",
-        content=content,
-        references=references or None,
-        token_count=token_count,
-    )
-    db.add(msg)
-    conv.updated_at = utcnow()
-    db.commit()
-    db.refresh(msg)
-    return msg
+    """保存助手消息（独立短会话：用完即关，不跨流式过程持有连接）。"""
+    with db_factory() as db:
+        conv = db.get(Conversation, conv_id)
+        msg = Message(
+            conversation_id=conv_id,
+            role="assistant",
+            content=content,
+            references=references or None,
+            token_count=token_count,
+        )
+        db.add(msg)
+        conv.updated_at = utcnow()
+        db.commit()
+        db.refresh(msg)
+        return msg
 
 
 def _filter_cited_references(references: list[dict], answer: str) -> list[dict]:
@@ -129,13 +132,17 @@ async def _stream_text(text: str):
 
 
 async def _stream_llm(
-    db: Session,
-    conv: Conversation,
+    db_factory,
+    conv_id: int,
     messages: list,
     references: list[dict],
     cache_key: str,
 ):
-    """调用模型流式生成：失败转为 error 事件；成功后落库并写缓存。"""
+    """调用模型流式生成：失败转为 error 事件；成功后落库并写缓存。
+
+    注意：生成期间不持有任何数据库连接（短会话模式），
+    高并发长流场景不会挤占连接池（压测实证修复）。
+    """
     llm = get_chat_model()
     full_text = ""
     token_count = None
@@ -153,29 +160,33 @@ async def _stream_llm(
         return
     # 只保留答案里实际引用到的条目（meta 里的候选列表供流式过程参考）
     cited_refs = _filter_cited_references(references, full_text)
-    msg = _save_assistant(db, conv, full_text, cited_refs, token_count)
+    msg = _save_assistant(db_factory, conv_id, full_text, cited_refs, token_count)
     cache.get_cache().set(cache_key, full_text, settings.cache_ttl_seconds)
     yield _sse_done(msg.id, token_count, cited_refs)
 
 
 async def stream_chat(
-    db: Session,
+    db_factory,
     user: User,
     conversation_id: int | None,
     question: str,
 ):
-    """流式问答主流程，逐个产出 SSE 事件 {event, data}。"""
-    conv = _get_or_create_conversation(db, user, conversation_id, question)
+    """流式问答主流程，逐个产出 SSE 事件 {event, data}。
 
-    # 1. 保存用户消息
-    db.add(Message(conversation_id=conv.id, role="user", content=question))
-    conv.updated_at = utcnow()
-    db.commit()
-
-    history_text = prompt.format_history(_load_history(db, conv.id, settings.history_turns))
+    短会话模式：只在需要数据库的三个阶段打开短会话（会话创建/引用快照/
+    落库），流式生成期间不持有任何连接——高并发长流不挤占连接池（压测实证）。
+    """
+    # 1. 会话与用户消息（短会话）
+    with db_factory() as db:
+        conv = _get_or_create_conversation(db, user, conversation_id, question)
+        db.add(Message(conversation_id=conv.id, role="user", content=question))
+        conv.updated_at = utcnow()
+        db.commit()
+        history = _load_history(db, conv.id, settings.history_turns)
+    history_text = prompt.format_history(history)
     plain_cache_key = cache.chat_cache_key(settings.model_chat, question, [])
 
-    # 2. 检索知识库（检索异常时中断并返回"系统繁忙"，绝不让聊天 500）
+    # 2. 检索知识库（无数据库连接；检索异常时中断并返回"系统繁忙"，绝不让聊天 500）
     try:
         docs = await asyncio.to_thread(get_retriever().invoke, question)
     except Exception:  # noqa: BLE001
@@ -184,7 +195,11 @@ async def stream_chat(
         return
 
     chroma_ids = [d.metadata.get("chroma_id") or "" for d in docs]
-    references = prompt.fit_context(_build_references(db, docs), settings.context_max_chars)
+    # 引用快照需要查文档标题（短会话）
+    with db_factory() as db:
+        references = prompt.fit_context(
+            _build_references(db, docs), settings.context_max_chars
+        )
     cache_key = cache.chat_cache_key(settings.model_chat, question, chroma_ids)
 
     # 3. 路由分流：检索相关度优先，关键词兜底
@@ -199,7 +214,7 @@ async def stream_chat(
             yield _meta_event(cached=True, citations=[], conversation_id=conv.id)
             async for event in _stream_text(cached_text):
                 yield event
-            msg = _save_assistant(db, conv, cached_text, [], None)
+            msg = _save_assistant(db_factory, conv.id, cached_text, [], None)
             yield _sse_done(msg.id, None, [])
             return
         yield _meta_event(cached=False, citations=[], conversation_id=conv.id)
@@ -207,7 +222,7 @@ async def stream_chat(
             SystemMessage(content=prompt.SYSTEM_PROMPT_PLAIN),
             HumanMessage(content=prompt.build_plain_user_prompt(history_text, question)),
         ]
-        async for event in _stream_llm(db, conv, messages, [], plain_cache_key):
+        async for event in _stream_llm(db_factory, conv.id, messages, [], plain_cache_key):
             yield event
         return
 
@@ -216,7 +231,7 @@ async def stream_chat(
         yield _meta_event(cached=False, citations=[], conversation_id=conv.id)
         async for event in _stream_text(prompt.FALLBACK_ANSWER):
             yield event
-        msg = _save_assistant(db, conv, prompt.FALLBACK_ANSWER, [], None)
+        msg = _save_assistant(db_factory, conv.id, prompt.FALLBACK_ANSWER, [], None)
         yield _sse_done(msg.id, None, [])
         return
 
@@ -227,7 +242,7 @@ async def stream_chat(
         async for event in _stream_text(cached_text):
             yield event
         cited_refs = _filter_cited_references(references, cached_text)
-        msg = _save_assistant(db, conv, cached_text, cited_refs, None)
+        msg = _save_assistant(db_factory, conv.id, cached_text, cited_refs, None)
         yield _sse_done(msg.id, None, cited_refs)
         return
 
@@ -236,7 +251,7 @@ async def stream_chat(
         SystemMessage(content=prompt.SYSTEM_PROMPT_RAG),
         HumanMessage(content=prompt.build_user_prompt(references, history_text, question)),
     ]
-    async for event in _stream_llm(db, conv, messages, references, cache_key):
+    async for event in _stream_llm(db_factory, conv.id, messages, references, cache_key):
         yield event
 
 

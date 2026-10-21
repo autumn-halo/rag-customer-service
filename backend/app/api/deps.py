@@ -5,7 +5,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.core.security import decode_access_token
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models.user import User
 
 # auto_error=False：未带令牌时自己抛 401，避免 FastAPI 默认的 403 语义
@@ -35,3 +35,26 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅管理员可访问")
     return user
+
+
+def get_current_user_shortlived(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> User:
+    """流式接口专用鉴权：会话用完立即关闭，不占用连接池直到流结束。
+
+    普通 get_current_user 基于 yield 依赖，其数据库会话在流式响应
+    期间一直持有连接；流式接口并发高、时长长，会打爆连接池（压测实证）。
+    """
+    if credentials is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未登录")
+    try:
+        payload = decode_access_token(credentials.credentials)
+    except jwt.PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="登录已过期，请重新登录"
+        ) from None
+    with SessionLocal() as db:
+        user = db.get(User, int(payload["sub"]))
+        if user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
+        return user  # 会话关闭；user 属性已加载完毕，脱离会话仍可安全读取

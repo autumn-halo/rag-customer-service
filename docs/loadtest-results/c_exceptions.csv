@@ -1,0 +1,6 @@
+Count,Message,Traceback,Nodes
+16,登录失败 loaduser071: Internal Server Error,"  File ""D:\LangChainRAG项目\backend\.venv\Lib\site-packages\locust\user\users.py"", line 166, in run
+    self.on_start()
+  File ""D:\LangChainRAG项目\scripts\loadtest\locustfile.py"", line 113, in on_start
+    raise RuntimeError(f""登录失败 {username}: {resp.text[:100]}"")
+",local

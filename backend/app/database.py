@@ -15,6 +15,11 @@ engine = create_engine(
     settings.db_path,
     connect_args=connect_args,
     pool_pre_ping=True,  # 取连接前先探测有效性，防止断连报错
+    # 连接池容量：流式问答期间会话会持有连接，100 并发用户场景
+    # 默认 15（5+10）不够用（压测实测打爆），扩容到 20+40
+    pool_size=20,
+    max_overflow=40,
+    pool_timeout=10,
 )
 
 if is_sqlite:

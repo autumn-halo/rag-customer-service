@@ -1,0 +1,4 @@
+Method,Name,Error,Occurrences,First Seen,Last Seen
+POST,/api/auth/login,HTTPError('500 Server Error: Internal Server Error for url: /api/auth/login'),16,2026-10-21T23:24:58Z,2026-10-21T23:25:08Z
+SSE,chat_total,HTTP 500,2,2026-10-21T23:24:57Z,2026-10-21T23:25:08Z
+POST,/api/chat/stream,HTTPError('500 Server Error: Internal Server Error for url: /api/chat/stream'),2,2026-10-21T23:24:57Z,2026-10-21T23:25:08Z

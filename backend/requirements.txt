@@ -37,4 +37,5 @@ pytest
 pytest-cov
 httpx                     # 接口测试客户端
 reportlab                 # 测试时动态生成 PDF 样例
+locust                    # 并发压测（scripts/loadtest/）
 ruff

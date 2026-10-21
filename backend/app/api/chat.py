@@ -10,7 +10,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user_shortlived
 from app.config import settings
 from app.core.rate_limit import SlidingWindowRateLimiter
 from app.database import SessionLocal
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 _chat_limiter = SlidingWindowRateLimiter(settings.rate_limit_chat_per_min)
 
 
-def check_chat_rate(user: User = Depends(get_current_user)) -> User:
+def check_chat_rate(user: User = Depends(get_current_user_shortlived)) -> User:
     if not _chat_limiter.allow(f"user:{user.id}"):
         raise HTTPException(status_code=429, detail="提问太频繁了，请稍后再试")
     return user
@@ -59,11 +59,11 @@ async def chat_stream(body: ChatRequest, user: User = Depends(check_chat_rate)):
     """流式问答。任何异常都转成 error 事件，绝不让流中断成 500。"""
 
     async def event_stream():
-        # 流式响应期间依赖注入的会话已关闭，这里单独开一个数据库会话
-        db = SessionLocal()
+        # 短会话模式：chat_service 内部按需开/关数据库会话，
+        # 流式期间不持有连接（鉴权也使用短会话依赖），高并发长流不挤占连接池
         try:
             async for frame in _with_heartbeat(
-                chat_service.stream_chat(db, user, body.conversation_id, body.message)
+                chat_service.stream_chat(SessionLocal, user, body.conversation_id, body.message)
             ):
                 yield frame
         except chat_service.ConversationNotFoundError as e:
@@ -71,8 +71,6 @@ async def chat_stream(body: ChatRequest, user: User = Depends(check_chat_rate)):
         except Exception:  # noqa: BLE001
             logger.exception("聊天流式生成失败")
             yield _sse("error", {"detail": "系统繁忙，请稍后重试"})
-        finally:
-            db.close()
 
     return StreamingResponse(
         event_stream(),
