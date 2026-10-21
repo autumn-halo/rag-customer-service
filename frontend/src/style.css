@@ -1,0 +1,52 @@
+/* 全局基础样式 */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 登录/注册页共用样式 */
+.auth-page {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #e0f2fe 0%, #ede9fe 100%);
+}
+
+.auth-card {
+  width: 400px;
+}
+
+.auth-title {
+  text-align: center;
+  margin: 8px 0 4px;
+}
+
+.auth-subtitle {
+  text-align: center;
+  color: #909399;
+  margin: 0 0 24px;
+  font-size: 14px;
+}
+
+.auth-button {
+  width: 100%;
+}
+
+.auth-footer {
+  margin-top: 16px;
+  text-align: center;
+  font-size: 14px;
+  color: #606266;
+}

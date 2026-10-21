@@ -1,0 +1,26 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# ===== 环境变量与密钥（绝不入库）=====
+.env
+backend/.env
+
+# ===== 运行时数据 =====
+backend/data/
+backend/static/
+
+# ===== Node / 前端构建 =====
+node_modules/
+frontend/dist/
+
+# ===== IDE / 系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

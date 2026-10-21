@@ -1,0 +1,39 @@
+# ===== Web 框架 =====
+fastapi
+uvicorn[standard]
+python-multipart          # 文件上传必需
+
+# ===== 数据库 =====
+sqlalchemy
+
+# ===== 配置管理 =====
+pydantic-settings
+
+# ===== LangChain 生态（核心框架）=====
+langchain
+langchain-openai          # 走 DashScope 的 OpenAI 兼容模式
+langchain-chroma          # Chroma 向量库的 LangChain 封装
+chromadb                  # 向量数据库
+
+# ===== 大模型与检索 =====
+openai                    # 兼容模式直连（对话/向量化/验证脚本）
+jieba                     # 中文分词（BM25 关键词检索）
+rank-bm25                 # BM25 关键词检索算法
+tenacity                  # API 调用失败自动重试
+
+# ===== 文档解析 =====
+pypdf                     # PDF
+python-docx               # Word
+openpyxl                  # Excel
+charset-normalizer        # 中文文本编码自动探测（GBK/UTF-8）
+
+# ===== 安全 =====
+bcrypt                    # 密码哈希
+PyJWT                     # 登录令牌 JWT
+
+# ===== 测试与代码规范 =====
+pytest
+pytest-cov
+httpx                     # 接口测试客户端
+reportlab                 # 测试时动态生成 PDF 样例
+ruff

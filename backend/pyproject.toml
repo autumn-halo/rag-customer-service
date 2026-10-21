@@ -1,0 +1,11 @@
+# ruff 代码规范 + pytest 测试配置
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]  # E: 风格错误 F: 逻辑错误 I: import 排序
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
