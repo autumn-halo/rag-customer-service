@@ -1,11 +1,12 @@
-"""聊天编排：检索知识库 → 组装提示词 → 流式回答 → 引用与消息落库。
+"""聊天编排：意图分流 → 检索/自由对话 → 流式回答 → 引用与消息落库。
 
-主流程：
-1. 会话归属校验（新建则自动建会话，标题取首问前 20 字）
-2. 保存用户消息
-3. 混合检索 + 重排（失败降级不中断聊天）
-4. 相关度过低 → 兜底话术（不调 LLM）；否则 → 缓存命中直接流式返回 / LLM 流式生成
-5. 保存助手消息（含引用快照与 token 用量），刷新缓存
+主流程（意图分流）：
+1. 会话归属校验（新建则自动建会话，标题取首问前 20 字），保存用户消息
+2. 意图识别：
+   - 商品/售后咨询 → 检索知识库；相关度过低或无结果 → 兜底话术（不调 LLM）
+   - 闲聊/通用问题 → 自由对话（不检索、不引用）
+3. 答案缓存：相同问题 + 相同引用集合 → 秒回
+4. 流式生成 → 保存助手消息（含引用快照与 token 用量）→ 写缓存
 """
 import asyncio
 import logging
@@ -20,7 +21,7 @@ from app.models.conversation import Conversation
 from app.models.document import Document
 from app.models.message import Message
 from app.models.user import User
-from app.rag import prompt
+from app.rag import intent, prompt
 from app.rag.chain import get_chat_model
 from app.rag.retriever import get_retriever
 from app.services import cache
@@ -118,6 +119,34 @@ async def _stream_text(text: str):
         yield {"event": "delta", "data": {"content": text[i : i + STREAM_CHUNK_SIZE]}}
 
 
+async def _stream_llm(
+    db: Session,
+    conv: Conversation,
+    messages: list,
+    references: list[dict],
+    cache_key: str,
+):
+    """调用模型流式生成：失败转为 error 事件；成功后落库并写缓存。"""
+    llm = get_chat_model()
+    full_text = ""
+    token_count = None
+    try:
+        async for chunk in llm.astream(messages):
+            text = chunk.content or ""
+            full_text += text
+            yield {"event": "delta", "data": {"content": text}}
+            usage = getattr(chunk, "usage_metadata", None)
+            if usage:
+                token_count = usage.get("total_tokens")
+    except Exception:  # noqa: BLE001
+        logger.exception("模型生成失败")
+        yield _sse_error("模型服务暂不可用，请稍后重试")
+        return
+    msg = _save_assistant(db, conv, full_text, references, token_count)
+    cache.get_cache().set(cache_key, full_text, settings.cache_ttl_seconds)
+    yield _sse_done(msg.id, token_count)
+
+
 async def stream_chat(
     db: Session,
     user: User,
@@ -132,9 +161,29 @@ async def stream_chat(
     conv.updated_at = utcnow()
     db.commit()
 
-    history = _load_history(db, conv.id, settings.history_turns)
+    history_text = prompt.format_history(_load_history(db, conv.id, settings.history_turns))
+    cache_key = cache.chat_cache_key(settings.model_chat, question, [])
 
-    # 2. RAG：检索知识库（检索异常时中断并返回"系统繁忙"，绝不让聊天 500）
+    # 2. 意图分流：闲聊/通用问题不检索知识库，直接自由对话
+    if not intent.is_product_question(question):
+        cached_text = cache.get_cache().get(cache_key)
+        if cached_text is not None:
+            yield _meta_event(cached=True, citations=[], conversation_id=conv.id)
+            async for event in _stream_text(cached_text):
+                yield event
+            msg = _save_assistant(db, conv, cached_text, [], None)
+            yield _sse_done(msg.id, None)
+            return
+        yield _meta_event(cached=False, citations=[], conversation_id=conv.id)
+        messages = [
+            SystemMessage(content=prompt.SYSTEM_PROMPT_PLAIN),
+            HumanMessage(content=prompt.build_plain_user_prompt(history_text, question)),
+        ]
+        async for event in _stream_llm(db, conv, messages, [], cache_key):
+            yield event
+        return
+
+    # 3. 商品咨询：检索知识库（检索异常时中断并返回"系统繁忙"，绝不让聊天 500）
     try:
         docs = await asyncio.to_thread(get_retriever().invoke, question)
     except Exception:  # noqa: BLE001
@@ -144,10 +193,11 @@ async def stream_chat(
 
     chroma_ids = [d.metadata.get("chroma_id") or "" for d in docs]
     references = prompt.fit_context(_build_references(db, docs), settings.context_max_chars)
+    cache_key = cache.chat_cache_key(settings.model_chat, question, chroma_ids)
 
-    # 3. 兜底：检索到资料但重排最高分低于阈值 → 不调 LLM，直接固定话术
+    # 4. 兜底：无相关资料或重排最高分低于阈值 → 不调 LLM，直接固定话术
     best_score = docs[0].metadata.get("rerank_score") if docs else None
-    if docs and best_score is not None and best_score < settings.rerank_threshold:
+    if not docs or (best_score is not None and best_score < settings.rerank_threshold):
         yield _meta_event(cached=False, citations=[], conversation_id=conv.id)
         async for event in _stream_text(prompt.FALLBACK_ANSWER):
             yield event
@@ -155,8 +205,7 @@ async def stream_chat(
         yield _sse_done(msg.id, None)
         return
 
-    # 4. 答案缓存：相同问题 + 相同引用集合 → 秒回
-    cache_key = cache.chat_cache_key(settings.model_chat, question, chroma_ids)
+    # 5. 答案缓存：相同问题 + 相同引用集合 → 秒回
     cached_text = cache.get_cache().get(cache_key)
     if cached_text is not None:
         yield _meta_event(cached=True, citations=references, conversation_id=conv.id)
@@ -166,36 +215,14 @@ async def stream_chat(
         yield _sse_done(msg.id, None)
         return
 
-    # 5. 组装提示词：有引用走"严格依据资料"模板，无引用走自由对话模板
-    system = prompt.SYSTEM_PROMPT_RAG if references else prompt.SYSTEM_PROMPT_PLAIN
-    history_text = prompt.format_history(history)
+    # 6. 严格模式：依据参考资料作答，强制引用格式
+    yield _meta_event(cached=False, citations=references, conversation_id=conv.id)
     messages = [
-        SystemMessage(content=system),
+        SystemMessage(content=prompt.SYSTEM_PROMPT_RAG),
         HumanMessage(content=prompt.build_user_prompt(references, history_text, question)),
     ]
-
-    # 6. 流式生成答案
-    llm = get_chat_model()
-    full_text = ""
-    token_count = None
-    try:
-        yield _meta_event(cached=False, citations=references, conversation_id=conv.id)
-        async for chunk in llm.astream(messages):
-            text = chunk.content or ""
-            full_text += text
-            yield {"event": "delta", "data": {"content": text}}
-            usage = getattr(chunk, "usage_metadata", None)
-            if usage:
-                token_count = usage.get("total_tokens")
-    except Exception:  # noqa: BLE001
-        logger.exception("模型生成失败")
-        yield _sse_error("模型服务暂不可用，请稍后重试")
-        return
-
-    # 7. 保存助手消息（含引用快照与 token 用量）+ 写缓存
-    msg = _save_assistant(db, conv, full_text, references, token_count)
-    cache.get_cache().set(cache_key, full_text, settings.cache_ttl_seconds)
-    yield _sse_done(msg.id, token_count)
+    async for event in _stream_llm(db, conv, messages, references, cache_key):
+        yield event
 
 
 def _sse_error(detail: str) -> dict:

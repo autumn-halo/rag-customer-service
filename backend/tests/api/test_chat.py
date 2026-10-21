@@ -23,7 +23,8 @@ def test_stream_event_protocol(client, auth_headers, monkeypatch):
     )
     headers = auth_headers("alice")
 
-    resp = client.post("/api/chat/stream", json={"message": "退货政策？"}, headers=headers)
+    # 用闲聊问题：走自由对话路径，由假模型流式生成
+    resp = client.post("/api/chat/stream", json={"message": "你好呀"}, headers=headers)
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
 

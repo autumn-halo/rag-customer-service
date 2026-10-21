@@ -71,7 +71,7 @@ def test_chat_creates_conversation_with_auto_title(client, auth_headers, monkeyp
         chat_service, "get_chat_model", lambda: FakeChatModel(answers=["好的，这是回答。"])
     )
     headers = auth_headers("alice")
-    question = "请问你们的退货政策是怎样的？"
+    question = "你好呀，请问你们是什么店？"  # 闲聊问题，走自由对话路径
 
     resp = client.post("/api/chat/stream", json={"message": question}, headers=headers)
     assert resp.status_code == 200

@@ -84,6 +84,26 @@ def test_answer_with_citations(client, auth_headers, monkeypatch):
     assert assistant["references"][0]["document_title"] == "退货政策.pdf"
 
 
+def test_product_question_without_docs_falls_back(client, auth_headers, monkeypatch):
+    """商品咨询但知识库没有任何资料 → 兜底话术，不调模型。"""
+    cache.get_cache().clear()
+    _patch_retriever(monkeypatch, [])  # 检索返回空
+
+    class _BoomLLM:
+        async def astream(self, messages):
+            raise AssertionError("兜底路径不应调用大模型")
+
+    monkeypatch.setattr(chat_service, "get_chat_model", lambda: _BoomLLM())
+
+    resp = client.post(
+        "/api/chat/stream", json={"message": "退货流程是什么"}, headers=auth_headers("alice")
+    )
+    events = _parse_sse(resp.text)
+    assert events[0][1]["citations"] == []
+    full = "".join(e[1]["content"] for e in events if e[0] == "delta")
+    assert full == prompt.FALLBACK_ANSWER
+
+
 def test_low_score_falls_back_without_llm(client, auth_headers, monkeypatch):
     cache.get_cache().clear()
     doc = _seed_document()
@@ -106,6 +126,29 @@ def test_low_score_falls_back_without_llm(client, auth_headers, monkeypatch):
     assert events[0][1]["citations"] == []  # 兜底不带引用
     full = "".join(e[1]["content"] for e in events if e[0] == "delta")
     assert full == prompt.FALLBACK_ANSWER
+
+
+def test_meta_question_goes_plain_path_without_retrieval(client, auth_headers, monkeypatch):
+    """闲聊问题（如"你是什么大模型"）不检索知识库，直接自由对话。"""
+    cache.get_cache().clear()
+
+    class _BoomRetriever:
+        def invoke(self, query):  # noqa: ARG002
+            raise AssertionError("闲聊问题不应触发检索")
+
+    monkeypatch.setattr(chat_service, "get_retriever", lambda: _BoomRetriever())
+    monkeypatch.setattr(
+        chat_service, "get_chat_model",
+        lambda: FakeChatModel(answers=["我是通义千问，阿里巴巴自研的大语言模型。"]),
+    )
+
+    resp = client.post(
+        "/api/chat/stream", json={"message": "你是什么大模型"}, headers=auth_headers("alice")
+    )
+    events = _parse_sse(resp.text)
+    assert events[0][1]["citations"] == []  # 自由对话不带引用
+    full = "".join(e[1]["content"] for e in events if e[0] == "delta")
+    assert "通义千问" in full
 
 
 def test_cache_hit_second_time(client, auth_headers, monkeypatch):

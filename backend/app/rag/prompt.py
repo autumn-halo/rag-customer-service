@@ -24,8 +24,17 @@ def build_context_block(references: list[dict]) -> str:
 
 
 def build_user_prompt(references: list[dict], history_text: str, question: str) -> str:
-    """组装用户消息：资料 + 对话历史 + 当前问题。"""
+    """组装严格模式的用户消息：资料 + 对话历史 + 当前问题。"""
     parts = ["【参考资料】\n" + (build_context_block(references) if references else "（无）")]
+    if history_text:
+        parts.append(f"【对话历史】\n{history_text}")
+    parts.append(f"【用户问题】\n{question}")
+    return "\n\n".join(parts)
+
+
+def build_plain_user_prompt(history_text: str, question: str) -> str:
+    """组装自由对话模式的用户消息（不带参考资料区块）。"""
+    parts = []
     if history_text:
         parts.append(f"【对话历史】\n{history_text}")
     parts.append(f"【用户问题】\n{question}")
