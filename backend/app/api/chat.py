@@ -3,6 +3,7 @@
 事件协议（前端用 fetch + ReadableStream 消费）：
   meta（会话/引用信息，先于答案到达）→ 多个 delta → done / error
 """
+import asyncio
 import json
 import logging
 
@@ -35,6 +36,24 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+async def _with_heartbeat(agen, interval: float = 15.0):
+    """流式输出期间每 interval 秒发一次 SSE 心跳注释。
+
+    模型长时间思考时没有数据产出，浏览器/代理可能判定连接超时断连；
+    心跳注释（SSE 协议规定注释行会被客户端忽略）保活连接。
+    """
+    it = agen.__aiter__()
+    while True:
+        try:
+            event = await asyncio.wait_for(it.__anext__(), timeout=interval)
+        except asyncio.TimeoutError:
+            yield ": ping\n\n"
+        except StopAsyncIteration:
+            return
+        else:
+            yield _sse(event["event"], event["data"])
+
+
 @router.post("/stream")
 async def chat_stream(body: ChatRequest, user: User = Depends(check_chat_rate)):
     """流式问答。任何异常都转成 error 事件，绝不让流中断成 500。"""
@@ -43,10 +62,10 @@ async def chat_stream(body: ChatRequest, user: User = Depends(check_chat_rate)):
         # 流式响应期间依赖注入的会话已关闭，这里单独开一个数据库会话
         db = SessionLocal()
         try:
-            async for event in chat_service.stream_chat(
-                db, user, body.conversation_id, body.message
+            async for frame in _with_heartbeat(
+                chat_service.stream_chat(db, user, body.conversation_id, body.message)
             ):
-                yield _sse(event["event"], event["data"])
+                yield frame
         except chat_service.ConversationNotFoundError as e:
             yield _sse("error", {"detail": str(e)})
         except Exception:  # noqa: BLE001

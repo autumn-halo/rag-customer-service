@@ -1,0 +1,38 @@
+# ============================================================
+# 方案 A（默认）：单容器跑全栈
+#   docker compose up -d
+#   访问 http://localhost:8000
+#
+# 方案 B（可选）：前端独立 nginx 容器（更贴近企业拓扑）
+#   docker compose --profile web up -d
+#   访问 http://localhost:8080
+# ============================================================
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - backend/.env
+    volumes:
+      # SQLite / Chroma / 上传文件全部落在 data/ 子目录，一个挂载点即可持久化
+      - ./backend/data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    profiles: ["web"]
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

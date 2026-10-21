@@ -1,8 +1,11 @@
 """FastAPI 应用入口：组装路由、中间件与启动任务。"""
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -67,11 +70,6 @@ app.include_router(chat.router, prefix="/api")
 app.include_router(documents.router, prefix="/api")
 
 
-@app.get("/")
-def root():
-    return {"name": "RAG 电商知识库问答系统", "docs": "/docs", "health": "/api/health"}
-
-
 @app.get("/api/health")
 def health():
     """健康检查：Docker healthcheck 与前端探活复用。"""
@@ -79,3 +77,21 @@ def health():
         "status": "ok",
         "dashscope_configured": bool(settings.dashscope_api_key),
     }
+
+
+# ===== 生产模式：托管前端构建产物（Docker 单容器部署用）=====
+# 开发模式（vite dev server）下 static 目录不存在，自动跳过。
+_STATIC_DIR = Path(__file__).parent / "static"
+
+if _STATIC_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=_STATIC_DIR / "assets"), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        """单页应用兜底：非 API 路径一律回退到 index.html（支持前端路由刷新）。"""
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="接口不存在")
+        file = _STATIC_DIR / full_path
+        if file.is_file():
+            return FileResponse(file)
+        return FileResponse(_STATIC_DIR / "index.html")
