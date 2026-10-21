@@ -49,6 +49,14 @@ export const useDocumentsStore = defineStore('documents', {
         this.pollTimer = null
       }
     },
+    // 切换账号时清空管理页数据（防止上一个用户的数据残留）
+    reset() {
+      this.stopPolling()
+      this.items = []
+      this.total = 0
+      this.page = 1
+      this.statusFilter = ''
+    },
     async upload(file) {
       const form = new FormData()
       form.append('files', file)

@@ -39,6 +39,17 @@ export const useChatStore = defineStore('chat', {
       this.messages = []
       this.citations = []
     },
+    // 彻底重置：切换账号/退出登录时调用，防止上一个用户的数据残留在界面
+    reset() {
+      this.stop()
+      this.conversations = []
+      this.currentId = null
+      this.currentTitle = ''
+      this.messages = []
+      this.streaming = false
+      this.streamingText = ''
+      this.citations = []
+    },
     async rename(id, title) {
       await http.patch(`/conversations/${id}`, { title })
       await this.loadConversations()
