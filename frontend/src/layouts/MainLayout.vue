@@ -19,7 +19,7 @@ function handleCommand(cmd) {
 <template>
   <el-container class="layout">
     <el-header class="layout-header" height="56px">
-      <div class="brand">🛒 RAG 电商知识库问答</div>
+      <div class="brand" @click="router.push({ name: 'chat' })">🛒 RAG 电商知识库问答</div>
       <el-dropdown @command="handleCommand">
         <span class="user-chip">
           <el-avatar :size="28">{{ auth.user?.username?.[0]?.toUpperCase() }}</el-avatar>
@@ -37,15 +37,9 @@ function handleCommand(cmd) {
         </template>
       </el-dropdown>
     </el-header>
-    <el-container class="layout-body">
-      <el-aside width="260px" class="layout-aside">
-        <!-- 会话列表：阶段 3 实现 -->
-        <div class="aside-placeholder">💬 会话列表（开发中）</div>
-      </el-aside>
-      <el-main class="layout-main">
-        <router-view />
-      </el-main>
-    </el-container>
+    <el-main class="layout-main">
+      <router-view />
+    </el-main>
   </el-container>
 </template>
 
@@ -66,6 +60,7 @@ function handleCommand(cmd) {
   font-size: 17px;
   font-weight: 600;
   color: #303133;
+  cursor: pointer;
 }
 
 .user-chip {
@@ -81,25 +76,9 @@ function handleCommand(cmd) {
   font-size: 14px;
 }
 
-.layout-body {
-  height: calc(100% - 56px);
-}
-
-.layout-aside {
-  border-right: 1px solid var(--el-border-color-light);
-  background: #fafafa;
-  display: flex;
-  flex-direction: column;
-}
-
-.aside-placeholder {
-  padding: 16px;
-  color: #909399;
-  font-size: 13px;
-}
-
 .layout-main {
   padding: 0;
   background: #fff;
+  height: calc(100% - 56px);
 }
 </style>
